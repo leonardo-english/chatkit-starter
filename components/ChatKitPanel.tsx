@@ -61,7 +61,7 @@ export function ChatKitPanel({
   );
   const [widgetInstanceKey, setWidgetInstanceKey] = useState(0);
 
-  // --- Episode context (from Webflow postMessage or optional query params) ---
+  // Episode context (from Webflow postMessage or optional query params)
   const [episodeCtx, setEpisodeCtx] = useState<{
     code: string;
     title?: string;
@@ -79,7 +79,7 @@ export function ChatKitPanel({
     };
   }, []);
 
-  // Load the ChatKit web component script status
+  // Load ChatKit script status
   useEffect(() => {
     if (!isBrowser) return;
 
@@ -131,7 +131,6 @@ export function ChatKitPanel({
     };
   }, [scriptStatus, setErrorState]);
 
-  // Workflow present?
   const isWorkflowConfigured = Boolean(
     WORKFLOW_ID && !WORKFLOW_ID.startsWith("wf_replace")
   );
@@ -158,7 +157,7 @@ export function ChatKitPanel({
     setWidgetInstanceKey((prev) => prev + 1);
   }, []);
 
-  // --- Accept optional query params (useful if you test the iframe directly) ---
+  // Accept optional query params for testing direct iframe loads
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const code = params.get("episodeCode");
@@ -171,12 +170,11 @@ export function ChatKitPanel({
     }
   }, []);
 
-  // --- Receive episode context from parent (Webflow) via postMessage ---
+  // Receive context from Webflow parent via postMessage
   useEffect(() => {
     const ALLOWED_PARENTS = [
       "https://leonardo-english.webflow.io",
-      // Add prod domain when live:
-      // "https://leonardoenglish.com",
+      // "https://leonardoenglish.com", // add when live
     ];
 
     function onMessage(e: MessageEvent) {
@@ -229,7 +227,6 @@ export function ChatKitPanel({
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             workflow: { id: WORKFLOW_ID },
-            // no metadata here (ChatKit sessions don’t accept it)
           }),
         });
 
@@ -290,8 +287,8 @@ export function ChatKitPanel({
 
   const {
     control,
-    sendUserMessage, // imperative helper to send a user turn
-    // setThreadId, focusComposer, setComposerValue, fetchUpdates, sendCustomAction, ...
+    sendUserMessage,   // available if you need it later
+    sendCustomAction,  // <-- we'll use this to send a hidden client action
   } = useChatKit({
     api: { getClientSecret },
     theme: {
@@ -344,7 +341,7 @@ export function ChatKitPanel({
     },
   });
 
-  // --- Inject the episode context as the very first user message (once) ---
+  // Send hidden episode context via a client action (no visible bubble)
   useEffect(() => {
     if (!control) return;
     if (!episodeCtx?.code) return;
@@ -352,15 +349,15 @@ export function ChatKitPanel({
 
     ctxSentRef.current = true;
 
-    const block =
-  `<!--[[EPISODE_CONTEXT]]\n` +
-  `code:${episodeCtx.code}\n` +
-  (episodeCtx.title ? `title:${episodeCtx.title}\n` : "") +
-  (episodeCtx.mp3 ? `mp3:${episodeCtx.mp3}\n` : "") +
-  `[[/EPISODE_CONTEXT]]-->`;
-
-    void sendUserMessage({ text: block });
-  }, [control, episodeCtx, sendUserMessage]);
+    void sendCustomAction({
+      name: "set_episode_context",
+      parameters: {
+        episodeCode: episodeCtx.code,
+        title: episodeCtx.title,
+        mp3: episodeCtx.mp3,
+      },
+    });
+  }, [control, episodeCtx, sendCustomAction]);
 
   const activeError = errors.session ?? errors.integration;
   const blockingError = errors.script ?? activeError;
