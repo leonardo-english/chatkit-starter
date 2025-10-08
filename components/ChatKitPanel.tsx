@@ -301,7 +301,7 @@ export function ChatKitPanel({
         }
       }
     },
-    [isWorkflowConfigured, setErrorState]
+    [isWorkflowConfigured, setErrorState, episodeCtx]
   );
 
   const {
