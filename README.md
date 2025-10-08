@@ -10,7 +10,7 @@ This repository is the simplest way to bootstrap a [ChatKit](http://openai.githu
 
 ## Getting Started
 
-Follow every step below to run the app locally and configure it for your preferred backend.
+Follow every step below to run the app  locally and configure it for your preferred backend.
 
 ### 1. Install dependencies
 
