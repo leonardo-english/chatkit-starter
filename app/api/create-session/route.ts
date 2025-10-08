@@ -13,6 +13,20 @@ interface CreateSessionRequestBody {
   mp3?: string | null;
 }
 
+type UpstreamErrorObject = {
+  message?: string;
+  type?: string;
+  param?: string;
+  code?: string;
+};
+
+type UpstreamResponse = {
+  client_secret?: string | null;
+  expires_after?: unknown;
+  error?: string | UpstreamErrorObject;
+  message?: string;
+};
+
 const DEFAULT_CHATKIT_BASE = "https://api.openai.com";
 const SESSION_COOKIE_NAME = "chatkit_session_id";
 const SESSION_COOKIE_MAX_AGE = 60 * 60 * 24 * 30; // 30 days
@@ -54,28 +68,20 @@ export async function POST(request: Request): Promise<Response> {
       body: JSON.stringify({
         workflow: { id: resolvedWorkflowId },
         user: userId,
-        // metadata at top-level
         metadata: episodeCode || title || mp3 ? { episodeCode, title, mp3 } : undefined,
       }),
     });
 
-    let upstreamJson: Record<string, unknown> | undefined =
-      (await upstreamResponse.json().catch(() => ({}))) as Record<string, unknown> | undefined;
+    let upstreamJson = (await upstreamResponse.json().catch(() => ({}))) as UpstreamResponse;
 
-    // If the server complains that 'metadata' is unknown here, retry under session.metadata
-    const maybeErrorMsg =
-      typeof upstreamJson?.error === "object" && upstreamJson?.error
-        ? (upstreamJson.error as any).message
-        : typeof upstreamJson?.message === "string"
-        ? (upstreamJson?.message as string)
-        : "";
+    const maybeErrorMsg = extractMessage(upstreamJson);
 
     const looksLikeUnknownMetadata =
       upstreamResponse.status === 400 &&
-      typeof maybeErrorMsg === "string" &&
       maybeErrorMsg.toLowerCase().includes("unknown parameter") &&
       maybeErrorMsg.toLowerCase().includes("metadata");
 
+    // ---- Attempt #2: fall back to session.metadata if needed ----
     if (!upstreamResponse.ok && looksLikeUnknownMetadata) {
       console.log("[create-session] retrying with session.metadata shape");
       upstreamResponse = await fetch(url, {
@@ -88,16 +94,13 @@ export async function POST(request: Request): Promise<Response> {
         body: JSON.stringify({
           workflow: { id: resolvedWorkflowId },
           user: userId,
-          // metadata nested under session
           session:
             episodeCode || title || mp3
               ? { metadata: { episodeCode, title, mp3 } }
               : undefined,
         }),
       });
-      upstreamJson = (await upstreamResponse.json().catch(() => ({}))) as
-        | Record<string, unknown>
-        | undefined;
+      upstreamJson = (await upstreamResponse.json().catch(() => ({}))) as UpstreamResponse;
     }
 
     if (!upstreamResponse.ok) {
@@ -119,6 +122,17 @@ export async function POST(request: Request): Promise<Response> {
 }
 
 /* ---------------- helpers ---------------- */
+
+function extractMessage(payload: UpstreamResponse | undefined): string {
+  if (!payload) return "";
+  if (typeof payload.message === "string") return payload.message;
+
+  const err = payload.error;
+  if (!err) return "";
+  if (typeof err === "string") return err;
+  if (typeof err.message === "string") return err.message;
+  return "";
+}
 
 async function safeParseJson<T>(req: Request): Promise<T | null> {
   try {
