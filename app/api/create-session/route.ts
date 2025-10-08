@@ -35,6 +35,15 @@ export async function POST(request: Request): Promise<Response> {
     const resolvedWorkflowId =
       parsedBody?.workflow?.id ?? parsedBody?.workflowId ?? WORKFLOW_ID;
 
+    // --- DEBUG LOGGING ---
+    console.log("[create-session] openaiApiKey present:", !!openaiApiKey);
+    console.log("[create-session] workflowId:", resolvedWorkflowId);
+    console.log("[create-session] origin:", request.headers.get("origin"));
+    console.log("[create-session] episodeCode:", parsedBody?.episodeCode);
+    console.log("[create-session] title:", parsedBody?.title);
+    console.log("[create-session] mp3:", parsedBody?.mp3);
+    // ---------------------
+
     if (!resolvedWorkflowId) {
       return buildJsonResponse(
         { error: "Missing workflow id" },
@@ -98,62 +107,4 @@ export async function POST(request: Request): Promise<Response> {
       sessionCookie
     );
   }
-}
-
-// --- helpers ---
-async function safeParseJson<T>(req: Request): Promise<T | null> {
-  try {
-    const text = await req.text();
-    if (!text) return null;
-    return JSON.parse(text) as T;
-  } catch {
-    return null;
-  }
-}
-
-async function resolveUserId(request: Request): Promise<{
-  userId: string;
-  sessionCookie: string | null;
-}> {
-  const existing = getCookieValue(request.headers.get("cookie"), SESSION_COOKIE_NAME);
-  if (existing) {
-    return { userId: existing, sessionCookie: null };
-  }
-  const generated =
-    typeof crypto.randomUUID === "function" ? crypto.randomUUID() : Math.random().toString(36).slice(2);
-  return { userId: generated, sessionCookie: serializeSessionCookie(generated) };
-}
-
-function getCookieValue(cookieHeader: string | null, name: string): string | null {
-  if (!cookieHeader) return null;
-  const cookies = cookieHeader.split(";");
-  for (const cookie of cookies) {
-    const [rawName, ...rest] = cookie.split("=");
-    if (!rawName || rest.length === 0) continue;
-    if (rawName.trim() === name) return rest.join("=").trim();
-  }
-  return null;
-}
-
-function serializeSessionCookie(value: string): string {
-  const attributes = [
-    `${SESSION_COOKIE_NAME}=${encodeURIComponent(value)}`,
-    "Path=/",
-    `Max-Age=${SESSION_COOKIE_MAX_AGE}`,
-    "HttpOnly",
-    "SameSite=Lax",
-  ];
-  if (process.env.NODE_ENV === "production") attributes.push("Secure");
-  return attributes.join("; ");
-}
-
-function buildJsonResponse(
-  payload: unknown,
-  status: number,
-  headers: Record<string, string>,
-  sessionCookie: string | null
-): Response {
-  const responseHeaders = new Headers(headers);
-  if (sessionCookie) responseHeaders.append("Set-Cookie", sessionCookie);
-  return new Response(JSON.stringify(payload), { status, headers: responseHeaders });
 }
