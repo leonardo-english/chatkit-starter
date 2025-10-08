@@ -126,14 +126,10 @@ export async function POST(request: Request): Promise<Response> {
         "OpenAI-Beta": "chatkit_beta=v1",
       },
       body: JSON.stringify({
-        workflow: { id: resolvedWorkflowId },
-        user: userId,
-        metadata: {
-          episodeCode,
-          title,
-          mp3,
-        },
-      }),
+  workflow: { id: resolvedWorkflowId },
+  user: userId,
+}),
+
     });
 
     const upstreamJson = (await upstreamResponse.json().catch(() => ({}))) as
