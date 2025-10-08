@@ -359,22 +359,11 @@ export function ChatKitPanel({
 
   // Send hidden episode context via a client action (no visible bubble)
   useEffect(() => {
-    if (!control) return;
-    if (!episodeCtx?.code) return;
-    if (ctxSentRef.current) return;
-
-    ctxSentRef.current = true;
-
-    void sendCustomAction({
-  type: "set_episode_context",
-  payload: {
-    episodeCode: episodeCtx.code,
-    title: episodeCtx.title,
-    mp3: episodeCtx.mp3,
-  },
-});
-
-  }, [control, episodeCtx, sendCustomAction]);
+  if (!control) return;
+  const hasThread = (control as any)?.threadId || (control as any)?.state?.threadId;
+  if (!hasThread) return; // wait until thread exists
+  // then sendCustomAction(...)
+}, [control, episodeCtx, sendCustomAction]);
 
   const activeError = errors.session ?? errors.integration;
   const blockingError = errors.script ?? activeError;
