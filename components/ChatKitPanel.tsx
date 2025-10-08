@@ -248,9 +248,6 @@ export function ChatKitPanel({
   }
   // ...leave the rest of your existing code below unchanged...
 
-
-        const raw = await response.text();
-
         if (isDev) {
           console.info("[ChatKitPanel] createSession response", {
             status: response.status,
