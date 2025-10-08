@@ -156,87 +156,113 @@ export function ChatKitPanel({
     setWidgetInstanceKey((prev) => prev + 1);
   }, []);
 
-  try {
-  // Grab query params from iframe URL
-  const urlParams = new URLSearchParams(window.location.search);
-  const episodeCode = urlParams.get("episodeCode");
-  const title = urlParams.get("title");
-  const mp3 = urlParams.get("mp3");
-
-  // Always include workflow
-  const payload: Record<string, unknown> = {
-    workflow: { id: WORKFLOW_ID },
-  };
-
-  // Only include metadata if present and not Webflow placeholders
-  if (episodeCode && !episodeCode.includes("{{wf")) payload.episodeCode = episodeCode;
-  if (title && !title.includes("{{wf")) payload.title = title;
-  if (mp3 && !mp3.includes("{{wf")) payload.mp3 = mp3;
-
-  const response = await fetch(CREATE_SESSION_ENDPOINT, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-  });
-
-
-      const raw = await response.text();
-
+  // ✅ Corrected getClientSecret
+  const getClientSecret = useCallback(
+    async (currentSecret: string | null) => {
       if (isDev) {
-        console.info("[ChatKitPanel] createSession response", {
-          status: response.status,
-          ok: response.ok,
-          bodyPreview: raw.slice(0, 1600),
+        console.info("[ChatKitPanel] getClientSecret invoked", {
+          currentSecretPresent: Boolean(currentSecret),
+          workflowId: WORKFLOW_ID,
+          endpoint: CREATE_SESSION_ENDPOINT,
         });
       }
 
-      let data: Record<string, unknown> = {};
-      if (raw) {
-        try {
-          data = JSON.parse(raw) as Record<string, unknown>;
-        } catch (parseError) {
-          console.error("Failed to parse create-session response", parseError);
+      if (!isWorkflowConfigured) {
+        const detail =
+          "Set NEXT_PUBLIC_CHATKIT_WORKFLOW_ID in your .env.local file.";
+        if (isMountedRef.current) {
+          setErrorState({ session: detail, retryable: false });
+          setIsInitializingSession(false);
         }
-      }
-
-      if (!response.ok) {
-        const detail = extractErrorDetail(data, response.statusText);
-        console.error("Create session request failed", {
-          status: response.status,
-          body: data,
-        });
         throw new Error(detail);
       }
 
-      const clientSecret = data?.client_secret as string | undefined;
-      if (!clientSecret) {
-        throw new Error("Missing client secret in response");
-      }
-
       if (isMountedRef.current) {
-        setErrorState({ session: null, integration: null });
+        if (!currentSecret) {
+          setIsInitializingSession(true);
+        }
+        setErrorState({ session: null, integration: null, retryable: false });
       }
 
-      return clientSecret;
-    } catch (error) {
-      console.error("Failed to create ChatKit session", error);
-      const detail =
-        error instanceof Error
-          ? error.message
-          : "Unable to start ChatKit session.";
-      if (isMountedRef.current) {
-        setErrorState({ session: detail, retryable: false });
-      }
-      throw error instanceof Error ? error : new Error(detail);
-    } finally {
-      if (isMountedRef.current && !currentSecret) {
-        setIsInitializingSession(false);
-      }
-    }
-  },
-  [isWorkflowConfigured, setErrorState]
-);
+      try {
+        // Grab query params from iframe URL
+        const urlParams = new URLSearchParams(window.location.search);
+        const episodeCode = urlParams.get("episodeCode");
+        const title = urlParams.get("title");
+        const mp3 = urlParams.get("mp3");
 
+        // Always include workflow
+        const payload: Record<string, unknown> = {
+          workflow: { id: WORKFLOW_ID },
+        };
+
+        // Only include metadata if present and not Webflow placeholders
+        if (episodeCode && !episodeCode.includes("{{wf")) payload.episodeCode = episodeCode;
+        if (title && !title.includes("{{wf")) payload.title = title;
+        if (mp3 && !mp3.includes("{{wf")) payload.mp3 = mp3;
+
+        const response = await fetch(CREATE_SESSION_ENDPOINT, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+
+        const raw = await response.text();
+
+        if (isDev) {
+          console.info("[ChatKitPanel] createSession response", {
+            status: response.status,
+            ok: response.ok,
+            bodyPreview: raw.slice(0, 1600),
+          });
+        }
+
+        let data: Record<string, unknown> = {};
+        if (raw) {
+          try {
+            data = JSON.parse(raw) as Record<string, unknown>;
+          } catch (parseError) {
+            console.error("Failed to parse create-session response", parseError);
+          }
+        }
+
+        if (!response.ok) {
+          const detail = extractErrorDetail(data, response.statusText);
+          console.error("Create session request failed", {
+            status: response.status,
+            body: data,
+          });
+          throw new Error(detail);
+        }
+
+        const clientSecret = data?.client_secret as string | undefined;
+        if (!clientSecret) {
+          throw new Error("Missing client secret in response");
+        }
+
+        if (isMountedRef.current) {
+          setErrorState({ session: null, integration: null });
+        }
+
+        return clientSecret;
+      } catch (error) {
+        console.error("Failed to create ChatKit session", error);
+        const detail =
+          error instanceof Error
+            ? error.message
+            : "Unable to start ChatKit session.";
+        if (isMountedRef.current) {
+          setErrorState({ session: detail, retryable: false });
+        }
+        throw error instanceof Error ? error : new Error(detail);
+      } finally {
+        if (isMountedRef.current && !currentSecret) {
+          setIsInitializingSession(false);
+        }
+      }
+    },
+    [isWorkflowConfigured, setErrorState]
+  );
 
   const chatkit = useChatKit({
     api: { getClientSecret },
@@ -308,8 +334,6 @@ export function ChatKitPanel({
       processedFacts.current.clear();
     },
     onError: ({ error }: { error: unknown }) => {
-      // Note that Chatkit UI handles errors for your users.
-      // Thus, your app code doesn't need to display errors on UI.
       console.error("ChatKit error", error);
     },
   });
