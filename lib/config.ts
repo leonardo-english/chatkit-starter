@@ -11,13 +11,13 @@ export const STARTER_PROMPTS: StartScreenPrompt[] = [
     icon: "circle-question",
   },
   {
-    label: "What can you do?",
+    label: "What is this episode about?",
     prompt: "What is this episode about?",
     icon: "circle-question",
   },
   {
-    label: "Vocbulary quiz",
-    prompt: "Create a vocabulary quiz",
+    label: "Create a vocabulary quiz",
+    prompt: "Create a vocabulary quiz based on the transcript of this episode",
     icon: "circle-question",
   },
 ];
