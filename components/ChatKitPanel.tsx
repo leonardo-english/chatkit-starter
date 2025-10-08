@@ -156,53 +156,29 @@ export function ChatKitPanel({
     setWidgetInstanceKey((prev) => prev + 1);
   }, []);
 
-  const getClientSecret = useCallback(
-  async (currentSecret: string | null) => {
-    if (isDev) {
-      console.info("[ChatKitPanel] getClientSecret invoked", {
-        currentSecretPresent: Boolean(currentSecret),
-        workflowId: WORKFLOW_ID,
-        endpoint: CREATE_SESSION_ENDPOINT,
-      });
-    }
+  try {
+  // Grab query params from iframe URL
+  const urlParams = new URLSearchParams(window.location.search);
+  const episodeCode = urlParams.get("episodeCode");
+  const title = urlParams.get("title");
+  const mp3 = urlParams.get("mp3");
 
-    if (!isWorkflowConfigured) {
-      const detail =
-        "Set NEXT_PUBLIC_CHATKIT_WORKFLOW_ID in your .env.local file.";
-      if (isMountedRef.current) {
-        setErrorState({ session: detail, retryable: false });
-        setIsInitializingSession(false);
-      }
-      throw new Error(detail);
-    }
+  // Always include workflow
+  const payload: Record<string, unknown> = {
+    workflow: { id: WORKFLOW_ID },
+  };
 
-    if (isMountedRef.current) {
-      if (!currentSecret) {
-        setIsInitializingSession(true);
-      }
-      setErrorState({ session: null, integration: null, retryable: false });
-    }
+  // Only include metadata if present and not Webflow placeholders
+  if (episodeCode && !episodeCode.includes("{{wf")) payload.episodeCode = episodeCode;
+  if (title && !title.includes("{{wf")) payload.title = title;
+  if (mp3 && !mp3.includes("{{wf")) payload.mp3 = mp3;
 
-    try {
-      // Grab query params from iframe URL
-      const urlParams = new URLSearchParams(window.location.search);
-      const episodeCode = urlParams.get("episodeCode");
-      const title = urlParams.get("title");
-      const mp3 = urlParams.get("mp3");
+  const response = await fetch(CREATE_SESSION_ENDPOINT, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
 
-      // Build payload safely (no undefineds)
-      const payload: Record<string, unknown> = {
-        workflow: { id: WORKFLOW_ID },
-      };
-      if (episodeCode) payload.episodeCode = episodeCode;
-      if (title) payload.title = title;
-      if (mp3) payload.mp3 = mp3;
-
-      const response = await fetch(CREATE_SESSION_ENDPOINT, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
 
       const raw = await response.text();
 
