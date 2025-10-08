@@ -184,6 +184,12 @@ export function ChatKitPanel({
       }
 
       try {
+        // Grab query params from iframe URL
+        const urlParams = new URLSearchParams(window.location.search);
+        const episodeCode = urlParams.get("episodeCode");
+        const title = urlParams.get("title");
+        const mp3 = urlParams.get("mp3");
+
         const response = await fetch(CREATE_SESSION_ENDPOINT, {
           method: "POST",
           headers: {
@@ -191,8 +197,12 @@ export function ChatKitPanel({
           },
           body: JSON.stringify({
             workflow: { id: WORKFLOW_ID },
+            episodeCode,
+            title,
+            mp3,
           }),
         });
+
 
         const raw = await response.text();
 
