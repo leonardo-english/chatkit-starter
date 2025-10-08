@@ -222,13 +222,32 @@ export function ChatKitPanel({
       }
 
       try {
-        const response = await fetch(CREATE_SESSION_ENDPOINT, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            workflow: { id: WORKFLOW_ID },
-          }),
-        });
+  // Build payload: always include workflow; add episode context if we have it
+  const payload: Record<string, unknown> = { workflow: { id: WORKFLOW_ID } };
+  if (episodeCtx?.code) {
+    payload.episodeCode = episodeCtx.code;
+    if (episodeCtx.title) payload.title = episodeCtx.title;
+    if (episodeCtx.mp3) payload.mp3 = episodeCtx.mp3;
+  }
+
+  const response = await fetch(CREATE_SESSION_ENDPOINT, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+
+  const raw = await response.text();
+
+  if (isDev) {
+    console.info("[ChatKitPanel] createSession response", {
+      status: response.status,
+      ok: response.ok,
+      bodyPreview: raw.slice(0, 1600),
+      sentPayload: payload,
+    });
+  }
+  // ...leave the rest of your existing code below unchanged...
+
 
         const raw = await response.text();
 

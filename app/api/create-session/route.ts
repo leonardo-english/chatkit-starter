@@ -7,7 +7,7 @@ interface CreateSessionRequestBody {
   scope?: { user_id?: string | null } | null;
   workflowId?: string | null;
 
-  // episode metadata
+  // episode metadata (optional)
   episodeCode?: string | null;
   title?: string | null;
   mp3?: string | null;
@@ -17,7 +17,109 @@ const DEFAULT_CHATKIT_BASE = "https://api.openai.com";
 const SESSION_COOKIE_NAME = "chatkit_session_id";
 const SESSION_COOKIE_MAX_AGE = 60 * 60 * 24 * 30; // 30 days
 
-// --- helpers ---
+export async function POST(request: Request): Promise<Response> {
+  let sessionCookie: string | null = null;
+  try {
+    const openaiApiKey = process.env.OPENAI_API_KEY;
+    if (!openaiApiKey) {
+      return json({ error: "Missing OPENAI_API_KEY environment variable" }, 500, null);
+    }
+
+    const parsedBody = await safeParseJson<CreateSessionRequestBody>(request);
+    const { userId, sessionCookie: resolvedSessionCookie } = await resolveUserId(request);
+    sessionCookie = resolvedSessionCookie ?? null;
+
+    const resolvedWorkflowId =
+      parsedBody?.workflow?.id ?? parsedBody?.workflowId ?? WORKFLOW_ID;
+
+    if (!resolvedWorkflowId) {
+      return json({ error: "Missing workflow id" }, 400, sessionCookie);
+    }
+
+    const episodeCode = parsedBody?.episodeCode ?? null;
+    const title = parsedBody?.title ?? null;
+    const mp3 = parsedBody?.mp3 ?? null;
+
+    const apiBase = DEFAULT_CHATKIT_BASE;
+    const url = `${apiBase}/v1/chatkit/sessions`;
+
+    // ---- Attempt #1: metadata at top level ----
+    let upstreamResponse = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${openaiApiKey}`,
+        "OpenAI-Beta": "chatkit_beta=v1",
+      },
+      body: JSON.stringify({
+        workflow: { id: resolvedWorkflowId },
+        user: userId,
+        // metadata at top-level
+        metadata: episodeCode || title || mp3 ? { episodeCode, title, mp3 } : undefined,
+      }),
+    });
+
+    let upstreamJson: Record<string, unknown> | undefined =
+      (await upstreamResponse.json().catch(() => ({}))) as Record<string, unknown> | undefined;
+
+    // If the server complains that 'metadata' is unknown here, retry under session.metadata
+    const maybeErrorMsg =
+      typeof upstreamJson?.error === "object" && upstreamJson?.error
+        ? (upstreamJson.error as any).message
+        : typeof upstreamJson?.message === "string"
+        ? (upstreamJson?.message as string)
+        : "";
+
+    const looksLikeUnknownMetadata =
+      upstreamResponse.status === 400 &&
+      typeof maybeErrorMsg === "string" &&
+      maybeErrorMsg.toLowerCase().includes("unknown parameter") &&
+      maybeErrorMsg.toLowerCase().includes("metadata");
+
+    if (!upstreamResponse.ok && looksLikeUnknownMetadata) {
+      console.log("[create-session] retrying with session.metadata shape");
+      upstreamResponse = await fetch(url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${openaiApiKey}`,
+          "OpenAI-Beta": "chatkit_beta=v1",
+        },
+        body: JSON.stringify({
+          workflow: { id: resolvedWorkflowId },
+          user: userId,
+          // metadata nested under session
+          session:
+            episodeCode || title || mp3
+              ? { metadata: { episodeCode, title, mp3 } }
+              : undefined,
+        }),
+      });
+      upstreamJson = (await upstreamResponse.json().catch(() => ({}))) as
+        | Record<string, unknown>
+        | undefined;
+    }
+
+    if (!upstreamResponse.ok) {
+      console.error("[create-session] upstream error", {
+        status: upstreamResponse.status,
+        body: upstreamJson,
+      });
+      return json({ error: upstreamJson }, upstreamResponse.status, sessionCookie);
+    }
+
+    const clientSecret = (upstreamJson?.client_secret ?? null) as string | null;
+    const expiresAfter = upstreamJson?.expires_after ?? null;
+
+    return json({ client_secret: clientSecret, expires_after: expiresAfter }, 200, sessionCookie);
+  } catch (e) {
+    console.error("[create-session] unexpected error", e);
+    return json({ error: "Unexpected error" }, 500, sessionCookie);
+  }
+}
+
+/* ---------------- helpers ---------------- */
+
 async function safeParseJson<T>(req: Request): Promise<T | null> {
   try {
     const text = await req.text();
@@ -64,108 +166,9 @@ function serializeSessionCookie(value: string): string {
   return attributes.join("; ");
 }
 
-function buildJsonResponse(
-  payload: unknown,
-  status: number,
-  headers: Record<string, string>,
-  sessionCookie: string | null
-): Response {
+function json(payload: unknown, status: number, sessionCookie: string | null) {
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
   const responseHeaders = new Headers(headers);
   if (sessionCookie) responseHeaders.append("Set-Cookie", sessionCookie);
   return new Response(JSON.stringify(payload), { status, headers: responseHeaders });
-}
-
-// --- main POST handler ---
-export async function POST(request: Request): Promise<Response> {
-  let sessionCookie: string | null = null;
-  try {
-    const openaiApiKey = process.env.OPENAI_API_KEY;
-    if (!openaiApiKey) {
-      return new Response(
-        JSON.stringify({ error: "Missing OPENAI_API_KEY environment variable" }),
-        { status: 500, headers: { "Content-Type": "application/json" } }
-      );
-    }
-
-    const parsedBody = await safeParseJson<CreateSessionRequestBody>(request);
-    const { userId, sessionCookie: resolvedSessionCookie } = await resolveUserId(request);
-    sessionCookie = resolvedSessionCookie;
-
-    const resolvedWorkflowId =
-      parsedBody?.workflow?.id ?? parsedBody?.workflowId ?? WORKFLOW_ID;
-
-    // --- DEBUG LOGGING ---
-    console.log("[create-session] openaiApiKey present:", !!openaiApiKey);
-    console.log("[create-session] workflowId:", resolvedWorkflowId);
-    console.log("[create-session] origin:", request.headers.get("origin"));
-    console.log("[create-session] episodeCode:", parsedBody?.episodeCode);
-    console.log("[create-session] title:", parsedBody?.title);
-    console.log("[create-session] mp3:", parsedBody?.mp3);
-    // ---------------------
-
-    if (!resolvedWorkflowId) {
-      return buildJsonResponse(
-        { error: "Missing workflow id" },
-        400,
-        { "Content-Type": "application/json" },
-        sessionCookie
-      );
-    }
-
-    // episode metadata passed from frontend
-    const episodeCode = parsedBody?.episodeCode ?? null;
-    const title = parsedBody?.title ?? null;
-    const mp3 = parsedBody?.mp3 ?? null;
-
-    const url = `${DEFAULT_CHATKIT_BASE}/v1/chatkit/sessions`;
-    const upstreamResponse = await fetch(url, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${openaiApiKey}`,
-        "OpenAI-Beta": "chatkit_beta=v1",
-      },
-      body: JSON.stringify({
-  workflow: { id: resolvedWorkflowId },
-  user: userId,
-}),
-
-    });
-
-    const upstreamJson = (await upstreamResponse.json().catch(() => ({}))) as
-      | Record<string, unknown>
-      | undefined;
-
-    // --- DEBUG (upstream response) ---
-    console.log("[create-session] upstream status:", upstreamResponse.status);
-    console.log("[create-session] upstream body:", JSON.stringify(upstreamJson));
-    // ---------------------------------
-
-    if (!upstreamResponse.ok) {
-      return buildJsonResponse(
-        { error: upstreamJson },
-        upstreamResponse.status,
-        { "Content-Type": "application/json" },
-        sessionCookie
-      );
-    }
-
-    const clientSecret = (upstreamJson?.client_secret ?? null) as string | null;
-    const expiresAfter = upstreamJson?.expires_after ?? null;
-
-    return buildJsonResponse(
-      { client_secret: clientSecret, expires_after: expiresAfter },
-      200,
-      { "Content-Type": "application/json" },
-      sessionCookie
-    );
-  } catch (error) {
-    console.error("[create-session] unexpected error", error);
-    return buildJsonResponse(
-      { error: "Unexpected error" },
-      500,
-      { "Content-Type": "application/json" },
-      sessionCookie
-    );
-  }
 }
