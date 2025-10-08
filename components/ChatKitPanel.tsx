@@ -322,36 +322,63 @@ export function ChatKitPanel({
     },
 
     onClientTool: async (invocation: { name: string; params: Record<string, unknown> }) => {
-      if (invocation.name === "switch_theme") {
-        const requested = invocation.params.theme;
-        if (requested === "light" || requested === "dark") {
-          if (isDev) console.debug("[ChatKitPanel] switch_theme", requested);
-          onThemeRequest(requested as ColorScheme);
-          return { success: true };
-        }
-        return { success: false };
-      }
+  // Theme switch (keep your existing behaviour)
+  if (invocation.name === "switch_theme") {
+    const requested = invocation.params.theme;
+    if (requested === "light" || requested === "dark") {
+      if (isDev) console.debug("[ChatKitPanel] switch_theme", requested);
+      onThemeRequest(requested as ColorScheme);
+      return { ok: true };
+    }
+    return { ok: false };
+  }
 
-      if (invocation.name === "record_fact") {
-        const id = String(invocation.params.fact_id ?? "");
-        const text = String(invocation.params.fact_text ?? "");
-        if (!id || processedFacts.current.has(id)) return { success: true };
-        processedFacts.current.add(id);
-        void onWidgetAction({
-          type: "save",
-          factId: id,
-          factText: text.replace(/\s+/g, " ").trim(),
-        });
-        return { success: true };
-      }
+  // Your existing "record_fact" handler (keep as-is)
+  if (invocation.name === "record_fact") {
+    const id = String(invocation.params.fact_id ?? "");
+    const text = String(invocation.params.fact_text ?? "");
+    if (!id || processedFacts.current.has(id)) return { ok: true };
+    processedFacts.current.add(id);
+    void onWidgetAction({
+      type: "save",
+      factId: id,
+      factText: text.replace(/\s+/g, " ").trim(),
+    });
+    return { ok: true };
+  }
 
-      return { success: false };
-    },
+  // NEW: let the agent pull the episode context
+  if (invocation.name === "request_episode_context") {
+    // Prefer state you’ve captured (via postMessage or query params)
+    // episodeCtx: { code, title?, mp3? } from your component state
+    let code = episodeCtx?.code;
+    let title = episodeCtx?.title;
+    let mp3 = episodeCtx?.mp3;
 
-    onError: ({ error }: { error: unknown }) => {
-      console.error("ChatKit error", error);
-    },
-  });
+    // Fallback to URL params if state isn’t set yet
+    if (!code && typeof window !== "undefined") {
+      const p = new URLSearchParams(window.location.search);
+      code = p.get("episodeCode") ?? undefined;
+      title = title ?? (p.get("title") ?? undefined);
+      mp3 = mp3 ?? (p.get("mp3") ?? undefined);
+    }
+
+    if (isDev) {
+      console.info("[ChatKitPanel] request_episode_context →", { code, title, mp3 });
+    }
+
+    // Return exactly what the agent expects
+    return {
+      ok: true,
+      episodeCode: code ?? null,
+      title: title ?? null,
+      mp3: mp3 ?? null,
+    };
+  }
+
+  // Unknown tool
+  return { ok: false };
+},
 
   const activeError = errors.session ?? errors.integration;
   const blockingError = errors.script ?? activeError;
