@@ -350,13 +350,14 @@ export function ChatKitPanel({
     ctxSentRef.current = true;
 
     void sendCustomAction({
-      name: "set_episode_context",
-      parameters: {
-        episodeCode: episodeCtx.code,
-        title: episodeCtx.title,
-        mp3: episodeCtx.mp3,
-      },
-    });
+  type: "set_episode_context",
+  payload: {
+    episodeCode: episodeCtx.code,
+    title: episodeCtx.title,
+    mp3: episodeCtx.mp3,
+  },
+});
+
   }, [control, episodeCtx, sendCustomAction]);
 
   const activeError = errors.session ?? errors.integration;
