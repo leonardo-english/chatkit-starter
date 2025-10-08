@@ -353,11 +353,11 @@ export function ChatKitPanel({
     ctxSentRef.current = true;
 
     const block =
-      `[[EPISODE_CONTEXT]]\n` +
-      `code:${episodeCtx.code}\n` +
-      (episodeCtx.title ? `title:${episodeCtx.title}\n` : "") +
-      (episodeCtx.mp3 ? `mp3:${episodeCtx.mp3}\n` : "") +
-      `[[/EPISODE_CONTEXT]]`;
+  `<!--[[EPISODE_CONTEXT]]\n` +
+  `code:${episodeCtx.code}\n` +
+  (episodeCtx.title ? `title:${episodeCtx.title}\n` : "") +
+  (episodeCtx.mp3 ? `mp3:${episodeCtx.mp3}\n` : "") +
+  `[[/EPISODE_CONTEXT]]-->`;
 
     void sendUserMessage({ text: block });
   }, [control, episodeCtx, sendUserMessage]);
