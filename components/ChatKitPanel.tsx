@@ -52,20 +52,26 @@ export function ChatKitPanel({
   const [errors, setErrors] = useState<ErrorState>(() => createInitialErrors());
   const [isInitializingSession, setIsInitializingSession] = useState(true);
   const isMountedRef = useRef(true);
-  const [scriptStatus, setScriptStatus] = useState<"pending" | "ready" | "error">(() =>
-    isBrowser && window.customElements?.get("openai-chatkit") ? "ready" : "pending",
+  const [scriptStatus, setScriptStatus] = useState<"pending" | "ready" | "error">(
+    () => (isBrowser && window.customElements?.get("openai-chatkit") ? "ready" : "pending"),
   );
   const [widgetInstanceKey, setWidgetInstanceKey] = useState(0);
 
-  const [hasInjected, setHasInjected] = useState(false);
+  // Track current thread id and whether we already injected context.
   const latestThreadIdRef = useRef<string | null>(null);
+  const injectedRef = useRef(false);
 
   const setErrorState = useCallback((updates: Partial<ErrorState>) => {
     setErrors((current) => ({ ...current, ...updates }));
   }, []);
 
-  useEffect(() => () => { isMountedRef.current = false; }, []);
+  useEffect(() => {
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
 
+  // Load web component script sentinel
   useEffect(() => {
     if (!isBrowser) return;
 
@@ -78,7 +84,7 @@ export function ChatKitPanel({
     };
 
     const handleError = (event: Event) => {
-      console.error("Failed to load chatkit.js for some reason", event);
+      console.error("Failed to load chatkit.js", event);
       if (!isMountedRef.current) return;
       setScriptStatus("error");
       const detail = (event as CustomEvent<unknown>)?.detail ?? "unknown error";
@@ -94,9 +100,11 @@ export function ChatKitPanel({
     } else if (scriptStatus === "pending") {
       timeoutId = window.setTimeout(() => {
         if (!window.customElements?.get("openai-chatkit")) {
-          handleError(new CustomEvent("chatkit-script-error", {
-            detail: "ChatKit web component is unavailable. Verify that the script URL is reachable.",
-          }));
+          handleError(
+            new CustomEvent("chatkit-script-error", {
+              detail: "ChatKit web component unavailable. Check the CDN.",
+            }),
+          );
         }
       }, 5000);
     }
@@ -122,17 +130,18 @@ export function ChatKitPanel({
 
   const handleResetChat = useCallback(() => {
     processedFacts.current.clear();
+    injectedRef.current = false;
+    latestThreadIdRef.current = null;
+
     if (isBrowser) {
       setScriptStatus(window.customElements?.get("openai-chatkit") ? "ready" : "pending");
     }
     setIsInitializingSession(true);
     setErrors(createInitialErrors());
     setWidgetInstanceKey((prev) => prev + 1);
-    setHasInjected(false);
-    latestThreadIdRef.current = null;
   }, []);
 
-  // -------- Episode context (parent referrer first, then iframe URL) --------
+  // -------- Resolve episode context (parent referrer preferred, then iframe URL) --------
   const episodeCtx = useMemo(() => {
     if (!isBrowser) return null;
 
@@ -154,7 +163,7 @@ export function ChatKitPanel({
         }
       }
     } catch {
-      // ignore
+      // ignore cross-origin parsing errors
     }
 
     if (!code) {
@@ -169,18 +178,18 @@ export function ChatKitPanel({
     }
 
     if (isDev) {
-      console.info("[ChatKitPanel] episodeCtx resolved", { from, code, title, mp3 });
+      console.info("[ChatKitPanel] episodeCtx", { from, code, title, mp3 });
     }
 
     if (!code) return null;
     return { code, title, mp3 };
   }, []);
 
-  // -------- Create ChatKit session (no metadata in POST!) --------
+  // -------- Create ChatKit session (no metadata in POST) --------
   const getClientSecret = useCallback(
     async (currentSecret: string | null) => {
       if (isDev) {
-        console.info("[ChatKitPanel] getClientSecret invoked", {
+        console.info("[ChatKitPanel] getClientSecret", {
           currentSecretPresent: Boolean(currentSecret),
           workflowId: WORKFLOW_ID,
           endpoint: CREATE_SESSION_ENDPOINT,
@@ -209,21 +218,25 @@ export function ChatKitPanel({
 
       const rawText = await response.text();
       let data: Record<string, unknown> = {};
-      try { if (rawText) data = JSON.parse(rawText) as Record<string, unknown>; } catch (e) {
-        console.error("Failed to parse create-session response", e);
+      if (rawText) {
+        try {
+          data = JSON.parse(rawText) as Record<string, unknown>;
+        } catch (e) {
+          console.error("Failed to parse create-session response", e);
+        }
       }
 
       if (isDev) {
-        console.info("[ChatKitPanel] createSession response", {
-          status: response.status, ok: response.ok, bodyPreview: rawText.slice(0, 1600),
+        console.info("[ChatKitPanel] create-session result", {
+          status: response.status,
+          ok: response.ok,
+          bodyPreview: rawText.slice(0, 1000),
         });
       }
 
       if (!response.ok) {
-        const detail =
-          typeof (data?.error as { message?: string } | undefined)?.message === "string"
-            ? (data!.error as { message: string }).message
-            : response.statusText;
+        const maybeError = (data?.error as { message?: string } | undefined)?.message;
+        const detail = maybeError || response.statusText;
         if (isMountedRef.current) setErrorState({ session: detail, retryable: false });
         throw new Error(detail);
       }
@@ -231,8 +244,10 @@ export function ChatKitPanel({
       const clientSecret = data?.client_secret as string | undefined;
       if (!clientSecret) throw new Error("Missing client secret in response");
 
-      if (isMountedRef.current) setErrorState({ session: null, integration: null });
-      if (isMountedRef.current && !currentSecret) setIsInitializingSession(false);
+      if (isMountedRef.current) {
+        setErrorState({ session: null, integration: null });
+        if (!currentSecret) setIsInitializingSession(false);
+      }
 
       return clientSecret;
     },
@@ -257,14 +272,36 @@ export function ChatKitPanel({
     onThreadChange: ({ threadId }: { threadId: string | null }) => {
       if (isDev) console.info("[ChatKitPanel] onThreadChange", { threadId });
       latestThreadIdRef.current = threadId;
+
+      // First time we see a non-null threadId → inject context once.
+      if (threadId && !injectedRef.current && episodeCtx?.code) {
+        injectedRef.current = true;
+        // Fire on next macrotask to give the widget a tick to settle.
+        setTimeout(() => {
+          if (isDev) console.info("[ChatKitPanel] injecting set_episode_context (onThreadChange)", episodeCtx);
+          chatkit
+            .sendCustomAction({
+              type: "set_episode_context",
+              payload: {
+                episodeCode: episodeCtx.code,
+                title: episodeCtx.title,
+                mp3: episodeCtx.mp3,
+              },
+            })
+            .catch((e: unknown) => {
+              injectedRef.current = false; // allow fallback onResponseStart
+              console.error("Failed to send set_episode_context in onThreadChange", e);
+            });
+        }, 0);
+      }
     },
 
     onResponseStart: async () => {
-      // Safety net: if somehow we still haven't injected by the time the first response begins,
-      // do it here (thread definitely exists now).
-      if (!hasInjected && episodeCtx?.code) {
+      // Fallback: if somehow we didn't inject yet, do it now.
+      if (!injectedRef.current && episodeCtx?.code) {
+        injectedRef.current = true;
         try {
-          if (isDev) console.info("[ChatKitPanel] onResponseStart -> inject fallback", episodeCtx);
+          if (isDev) console.info("[ChatKitPanel] injecting set_episode_context (onResponseStart)", episodeCtx);
           await chatkit.sendCustomAction({
             type: "set_episode_context",
             payload: {
@@ -273,7 +310,6 @@ export function ChatKitPanel({
               mp3: episodeCtx.mp3,
             },
           });
-          setHasInjected(true);
         } catch (e) {
           console.error("Failed to inject context in onResponseStart", e);
         }
@@ -281,67 +317,54 @@ export function ChatKitPanel({
       setErrorState({ integration: null, retryable: false });
     },
 
-    onResponseEnd: () => onResponseEnd(),
+    onResponseEnd: () => {
+      onResponseEnd();
+    },
+
+    onClientTool: async (invocation: { name: string; params: Record<string, unknown> }) => {
+      if (invocation.name === "switch_theme") {
+        const requested = invocation.params.theme;
+        if (requested === "light" || requested === "dark") {
+          if (isDev) console.debug("[ChatKitPanel] switch_theme", requested);
+          onThemeRequest(requested as ColorScheme);
+          return { success: true };
+        }
+        return { success: false };
+      }
+
+      if (invocation.name === "record_fact") {
+        const id = String(invocation.params.fact_id ?? "");
+        const text = String(invocation.params.fact_text ?? "");
+        if (!id || processedFacts.current.has(id)) return { success: true };
+        processedFacts.current.add(id);
+        void onWidgetAction({
+          type: "save",
+          factId: id,
+          factText: text.replace(/\s+/g, " ").trim(),
+        });
+        return { success: true };
+      }
+
+      return { success: false };
+    },
 
     onError: ({ error }: { error: unknown }) => {
       console.error("ChatKit error", error);
     },
   });
 
-  // Create a thread ASAP once control is ready, then inject context once.
-  useEffect(() => {
-    const run = async () => {
-      if (!chatkit.control) return;
-      if (hasInjected) return;
-
-      // Ensure thread exists
-      let tid = latestThreadIdRef.current;
-      if (!tid) {
-        if (isDev) console.info("[ChatKitPanel] no thread yet → creating one");
-        try {
-          tid = await chatkit.createThread(); // chatkit-react exposes this helper
-          latestThreadIdRef.current = tid;
-          if (isDev) console.info("[ChatKitPanel] created thread", { threadId: tid });
-        } catch (e) {
-          console.error("Failed to create thread", e);
-          return;
-        }
-      }
-
-      // Inject once we have both a thread and context
-      if (episodeCtx?.code && !hasInjected) {
-        try {
-          if (isDev) console.info("[ChatKitPanel] injecting set_episode_context", episodeCtx);
-          await chatkit.sendCustomAction({
-            type: "set_episode_context",
-            payload: {
-              episodeCode: episodeCtx.code,
-              title: episodeCtx.title,
-              mp3: episodeCtx.mp3,
-            },
-          });
-          setHasInjected(true);
-        } catch (e) {
-          console.error("Failed to send set_episode_context", e);
-        }
-      }
-    };
-
-    void run();
-  }, [chatkit.control, episodeCtx, hasInjected, chatkit]);
-
   const activeError = errors.session ?? errors.integration;
   const blockingError = errors.script ?? activeError;
 
   if (isDev) {
-    console.debug("[ChatKitPanel] render state", {
+    console.debug("[ChatKitPanel] render", {
       isInitializingSession,
       hasControl: Boolean(chatkit.control),
       scriptStatus,
       hasError: Boolean(blockingError),
       workflowId: WORKFLOW_ID,
       episodeCtx,
-      hasInjected,
+      injected: injectedRef.current,
       latestThreadId: latestThreadIdRef.current,
     });
   }
