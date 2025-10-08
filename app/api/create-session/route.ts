@@ -12,16 +12,21 @@ interface CreateSessionRequestBody {
   mp3?: string | null;
 }
 
-type UpstreamError = {
+interface UpstreamError {
   message?: string;
   type?: string;
   param?: string;
   code?: string;
-};
+}
 
-type UpstreamOk = {
+interface UpstreamOk {
   client_secret?: string | null;
   expires_after?: unknown;
+}
+
+type UpstreamBody = UpstreamOk & {
+  error?: UpstreamError;
+  message?: string;
 };
 
 const DEFAULT_CHATKIT_BASE = "https://api.openai.com";
@@ -79,31 +84,23 @@ export async function POST(request: Request): Promise<Response> {
     });
 
     const text = await resp.text();
-    let jsonResp: UpstreamOk | { error?: UpstreamError } = {};
-    try {
-      jsonResp = text ? (JSON.parse(text) as typeof jsonResp) : {};
-    } catch {
-      // leave as empty object
-    }
+    const parsed: UpstreamBody = parseJsonSafe(text);
 
     if (!resp.ok) {
+      const upstreamMsg = getUpstreamMessage(parsed, text);
       console.error("[create-session] upstream error", {
         status: resp.status,
-        body: jsonResp || text,
+        body: parsed || text,
       });
-      // surface upstream message to the browser to debug quickly
       return json(
-        {
-          error: (jsonResp as any)?.error?.message || (jsonResp as any)?.message || "Upstream error",
-          details: jsonResp || text,
-        },
+        { error: upstreamMsg, details: parsed || text },
         resp.status,
         sessionCookie
       );
     }
 
-    const clientSecret = (jsonResp as UpstreamOk)?.client_secret ?? null;
-    const expiresAfter = (jsonResp as UpstreamOk)?.expires_after ?? null;
+    const clientSecret = parsed.client_secret ?? null;
+    const expiresAfter = parsed.expires_after ?? null;
 
     return json({ client_secret: clientSecret, expires_after: expiresAfter }, 200, sessionCookie);
   } catch (e) {
@@ -113,6 +110,22 @@ export async function POST(request: Request): Promise<Response> {
 }
 
 /* ---------------- helpers ---------------- */
+
+function parseJsonSafe(text: string): UpstreamBody {
+  try {
+    return text ? (JSON.parse(text) as UpstreamBody) : {};
+  } catch {
+    return {};
+  }
+}
+
+function getUpstreamMessage(body: UpstreamBody, fallbackText: string): string {
+  if (typeof body.message === "string" && body.message) return body.message;
+  if (body.error && typeof body.error.message === "string" && body.error.message) {
+    return body.error.message;
+  }
+  return fallbackText || "Upstream error";
+}
 
 async function safeParseJson<T>(req: Request): Promise<T | null> {
   try {
