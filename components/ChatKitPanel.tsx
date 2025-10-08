@@ -61,16 +61,13 @@ export function ChatKitPanel({
   );
   const [widgetInstanceKey, setWidgetInstanceKey] = useState(0);
 
-  // Episode context coming from Webflow (or query params)
-const [episodeCtx, setEpisodeCtx] = useState<{
-  code: string;
-  title?: string;
-  mp3?: string;
-} | null>(null);
-
-// Ensure we only send the context once per session
-const ctxSentRef = useRef(false);
-
+  // --- Episode context (from Webflow postMessage or optional query params) ---
+  const [episodeCtx, setEpisodeCtx] = useState<{
+    code: string;
+    title?: string;
+    mp3?: string;
+  } | null>(null);
+  const ctxSentRef = useRef(false);
 
   const setErrorState = useCallback((updates: Partial<ErrorState>) => {
     setErrors((current) => ({ ...current, ...updates }));
@@ -82,26 +79,21 @@ const ctxSentRef = useRef(false);
     };
   }, []);
 
+  // Load the ChatKit web component script status
   useEffect(() => {
-    if (!isBrowser) {
-      return;
-    }
+    if (!isBrowser) return;
 
     let timeoutId: number | undefined;
 
     const handleLoaded = () => {
-      if (!isMountedRef.current) {
-        return;
-      }
+      if (!isMountedRef.current) return;
       setScriptStatus("ready");
       setErrorState({ script: null });
     };
 
     const handleError = (event: Event) => {
       console.error("Failed to load chatkit.js for some reason", event);
-      if (!isMountedRef.current) {
-        return;
-      }
+      if (!isMountedRef.current) return;
       setScriptStatus("error");
       const detail = (event as CustomEvent<unknown>)?.detail ?? "unknown error";
       setErrorState({ script: `Error: ${detail}`, retryable: false });
@@ -135,56 +127,14 @@ const ctxSentRef = useRef(false);
         "chatkit-script-error",
         handleError as EventListener
       );
-      if (timeoutId) {
-        window.clearTimeout(timeoutId);
-      }
+      if (timeoutId) window.clearTimeout(timeoutId);
     };
   }, [scriptStatus, setErrorState]);
 
+  // Workflow present?
   const isWorkflowConfigured = Boolean(
     WORKFLOW_ID && !WORKFLOW_ID.startsWith("wf_replace")
   );
-
-  // Fallback: also accept query params if you ever decide to pass them (optional)
-useEffect(() => {
-  const params = new URLSearchParams(window.location.search);
-  const code = params.get("episodeCode");
-  if (code) {
-    setEpisodeCtx({
-      code,
-      title: params.get("title") || undefined,
-      mp3: params.get("mp3") || undefined,
-    });
-  }
-}, []);
-
-// Receive context via postMessage from the Webflow parent page
-useEffect(() => {
-  // Allow only your embedding origins
-  const ALLOWED_PARENTS = [
-    "https://leonardo-english.webflow.io",
-    // add your live site when ready:
-    // "https://leonardoenglish.com",
-  ];
-
-  function onMessage(e: MessageEvent) {
-    if (!e.data || e.data.type !== "le-episode-context") return;
-    if (!ALLOWED_PARENTS.includes(e.origin)) return; // origin check
-
-    const code = String(e.data.code || "").trim();
-    if (!code) return;
-
-    setEpisodeCtx({
-      code,
-      title: (e.data.title || "").trim() || undefined,
-      mp3: (e.data.mp3 || "").trim() || undefined,
-    });
-  }
-
-  window.addEventListener("message", onMessage);
-  return () => window.removeEventListener("message", onMessage);
-}, []);
-
 
   useEffect(() => {
     if (!isWorkflowConfigured && isMountedRef.current) {
@@ -208,7 +158,46 @@ useEffect(() => {
     setWidgetInstanceKey((prev) => prev + 1);
   }, []);
 
-  // ✅ Corrected getClientSecret
+  // --- Accept optional query params (useful if you test the iframe directly) ---
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const code = params.get("episodeCode");
+    if (code) {
+      setEpisodeCtx({
+        code,
+        title: params.get("title") || undefined,
+        mp3: params.get("mp3") || undefined,
+      });
+    }
+  }, []);
+
+  // --- Receive episode context from parent (Webflow) via postMessage ---
+  useEffect(() => {
+    const ALLOWED_PARENTS = [
+      "https://leonardo-english.webflow.io",
+      // Add prod domain when live:
+      // "https://leonardoenglish.com",
+    ];
+
+    function onMessage(e: MessageEvent) {
+      if (!e.data || e.data.type !== "le-episode-context") return;
+      if (!ALLOWED_PARENTS.includes(e.origin)) return;
+
+      const code = String(e.data.code || "").trim();
+      if (!code) return;
+
+      setEpisodeCtx({
+        code,
+        title: (e.data.title || "").trim() || undefined,
+        mp3: (e.data.mp3 || "").trim() || undefined,
+      });
+    }
+
+    window.addEventListener("message", onMessage);
+    return () => window.removeEventListener("message", onMessage);
+  }, []);
+
+  // --------------------------- ChatKit plumbing ---------------------------
   const getClientSecret = useCallback(
     async (currentSecret: string | null) => {
       if (isDev) {
@@ -230,33 +219,18 @@ useEffect(() => {
       }
 
       if (isMountedRef.current) {
-        if (!currentSecret) {
-          setIsInitializingSession(true);
-        }
+        if (!currentSecret) setIsInitializingSession(true);
         setErrorState({ session: null, integration: null, retryable: false });
       }
 
       try {
-        // Grab query params from iframe URL
-        const urlParams = new URLSearchParams(window.location.search);
-        const episodeCode = urlParams.get("episodeCode");
-        const title = urlParams.get("title");
-        const mp3 = urlParams.get("mp3");
-
-        // Always include workflow
-        const payload: Record<string, unknown> = {
-          workflow: { id: WORKFLOW_ID },
-        };
-
-        // Only include metadata if present and not Webflow placeholders
-        if (episodeCode && !episodeCode.includes("{{wf")) payload.episodeCode = episodeCode;
-        if (title && !title.includes("{{wf")) payload.title = title;
-        if (mp3 && !mp3.includes("{{wf")) payload.mp3 = mp3;
-
         const response = await fetch(CREATE_SESSION_ENDPOINT, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload),
+          body: JSON.stringify({
+            workflow: { id: WORKFLOW_ID },
+            // no metadata here (ChatKit sessions don’t accept it)
+          }),
         });
 
         const raw = await response.text();
@@ -288,9 +262,7 @@ useEffect(() => {
         }
 
         const clientSecret = data?.client_secret as string | undefined;
-        if (!clientSecret) {
-          throw new Error("Missing client secret in response");
-        }
+        if (!clientSecret) throw new Error("Missing client secret in response");
 
         if (isMountedRef.current) {
           setErrorState({ session: null, integration: null });
@@ -316,20 +288,17 @@ useEffect(() => {
     [isWorkflowConfigured, setErrorState]
   );
 
-  const chatkit = useChatKit({
+  const {
+    control,
+    sendUserMessage, // imperative helper to send a user turn
+    // setThreadId, focusComposer, setComposerValue, fetchUpdates, sendCustomAction, ...
+  } = useChatKit({
     api: { getClientSecret },
     theme: {
       colorScheme: theme,
       color: {
-        grayscale: {
-          hue: 220,
-          tint: 6,
-          shade: theme === "dark" ? -1 : -4,
-        },
-        accent: {
-          primary: theme === "dark" ? "#f1f5f9" : "#0f172a",
-          level: 1,
-        },
+        grayscale: { hue: 220, tint: 6, shade: theme === "dark" ? -1 : -4 },
+        accent: { primary: theme === "dark" ? "#f1f5f9" : "#0f172a", level: 1 },
       },
       radius: "round",
     },
@@ -337,22 +306,13 @@ useEffect(() => {
       greeting: GREETING,
       prompts: STARTER_PROMPTS,
     },
-    composer: {
-      placeholder: PLACEHOLDER_INPUT,
-    },
-    threadItemActions: {
-      feedback: false,
-    },
-    onClientTool: async (invocation: {
-      name: string;
-      params: Record<string, unknown>;
-    }) => {
+    composer: { placeholder: PLACEHOLDER_INPUT },
+    threadItemActions: { feedback: false },
+    onClientTool: async (invocation: { name: string; params: Record<string, unknown> }) => {
       if (invocation.name === "switch_theme") {
         const requested = invocation.params.theme;
         if (requested === "light" || requested === "dark") {
-          if (isDev) {
-            console.debug("[ChatKitPanel] switch_theme", requested);
-          }
+          if (isDev) console.debug("[ChatKitPanel] switch_theme", requested);
           onThemeRequest(requested);
           return { success: true };
         }
@@ -376,41 +336,31 @@ useEffect(() => {
 
       return { success: false };
     },
-    onResponseEnd: () => {
-      onResponseEnd();
-    },
-    onResponseStart: () => {
-      setErrorState({ integration: null, retryable: false });
-    },
-    onThreadChange: () => {
-      processedFacts.current.clear();
-    },
+    onResponseEnd: () => onResponseEnd(),
+    onResponseStart: () => setErrorState({ integration: null, retryable: false }),
+    onThreadChange: () => processedFacts.current.clear(),
     onError: ({ error }: { error: unknown }) => {
       console.error("ChatKit error", error);
     },
   });
 
-  // When chatkit is ready and we have an episode code, post a tiny context message once
-useEffect(() => {
-  if (!chatkit.control) return;
-  if (!episodeCtx?.code) return;
-  if (ctxSentRef.current) return;
+  // --- Inject the episode context as the very first user message (once) ---
+  useEffect(() => {
+    if (!control) return;
+    if (!episodeCtx?.code) return;
+    if (ctxSentRef.current) return;
 
-  ctxSentRef.current = true;
+    ctxSentRef.current = true;
 
-  const block =
-    `[[EPISODE_CONTEXT]]\n` +
-    `code:${episodeCtx.code}\n` +
-    (episodeCtx.title ? `title:${episodeCtx.title}\n` : "") +
-    (episodeCtx.mp3 ? `mp3:${episodeCtx.mp3}\n` : "") +
-    `[[/EPISODE_CONTEXT]]`;
+    const block =
+      `[[EPISODE_CONTEXT]]\n` +
+      `code:${episodeCtx.code}\n` +
+      (episodeCtx.title ? `title:${episodeCtx.title}\n` : "") +
+      (episodeCtx.mp3 ? `mp3:${episodeCtx.mp3}\n` : "") +
+      `[[/EPISODE_CONTEXT]]`;
 
-  chatkit.control.send({
-    role: "user",
-    content: [{ type: "input_text", text: block }],
-  });
-}, [chatkit.control, episodeCtx]);
-
+    void sendUserMessage({ text: block });
+  }, [control, episodeCtx, sendUserMessage]);
 
   const activeError = errors.session ?? errors.integration;
   const blockingError = errors.script ?? activeError;
@@ -418,7 +368,7 @@ useEffect(() => {
   if (isDev) {
     console.debug("[ChatKitPanel] render state", {
       isInitializingSession,
-      hasControl: Boolean(chatkit.control),
+      hasControl: Boolean(control),
       scriptStatus,
       hasError: Boolean(blockingError),
       workflowId: WORKFLOW_ID,
@@ -429,7 +379,7 @@ useEffect(() => {
     <div className="relative flex h-[90vh] w-full flex-col overflow-hidden bg-white shadow-sm transition-colors dark:bg-slate-900">
       <ChatKit
         key={widgetInstanceKey}
-        control={chatkit.control}
+        control={control}
         className={
           blockingError || isInitializingSession
             ? "pointer-events-none opacity-0"
@@ -439,9 +389,7 @@ useEffect(() => {
       <ErrorOverlay
         error={blockingError}
         fallbackMessage={
-          blockingError || !isInitializingSession
-            ? null
-            : "Loading assistant session..."
+          blockingError || !isInitializingSession ? null : "Loading assistant session..."
         }
         onRetry={blockingError && errors.retryable ? handleResetChat : null}
         retryLabel="Restart chat"
@@ -454,14 +402,10 @@ function extractErrorDetail(
   payload: Record<string, unknown> | undefined,
   fallback: string
 ): string {
-  if (!payload) {
-    return fallback;
-  }
+  if (!payload) return fallback;
 
   const error = payload.error;
-  if (typeof error === "string") {
-    return error;
-  }
+  if (typeof error === "string") return error;
 
   if (
     error &&
@@ -473,15 +417,11 @@ function extractErrorDetail(
   }
 
   const details = payload.details;
-  if (typeof details === "string") {
-    return details;
-  }
+  if (typeof details === "string") return details;
 
   if (details && typeof details === "object" && "error" in details) {
     const nestedError = (details as { error?: unknown }).error;
-    if (typeof nestedError === "string") {
-      return nestedError;
-    }
+    if (typeof nestedError === "string") return nestedError;
     if (
       nestedError &&
       typeof nestedError === "object" &&
@@ -492,9 +432,7 @@ function extractErrorDetail(
     }
   }
 
-  if (typeof payload.message === "string") {
-    return payload.message;
-  }
+  if (typeof payload.message === "string") return payload.message;
 
   return fallback;
 }
