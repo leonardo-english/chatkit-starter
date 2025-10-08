@@ -57,10 +57,6 @@ export function ChatKitPanel({
   );
   const [widgetInstanceKey, setWidgetInstanceKey] = useState(0);
 
-  // Track current thread id and whether we already injected context.
-  const latestThreadIdRef = useRef<string | null>(null);
-  const injectedRef = useRef(false);
-
   const setErrorState = useCallback((updates: Partial<ErrorState>) => {
     setErrors((current) => ({ ...current, ...updates }));
   }, []);
@@ -130,9 +126,6 @@ export function ChatKitPanel({
 
   const handleResetChat = useCallback(() => {
     processedFacts.current.clear();
-    injectedRef.current = false;
-    latestThreadIdRef.current = null;
-
     if (isBrowser) {
       setScriptStatus(window.customElements?.get("openai-chatkit") ? "ready" : "pending");
     }
@@ -141,7 +134,7 @@ export function ChatKitPanel({
     setWidgetInstanceKey((prev) => prev + 1);
   }, []);
 
-  // -------- Resolve episode context (parent referrer preferred, then iframe URL) --------
+  // -------- Resolve episode context (prefer parent referrer, else iframe URL) --------
   const episodeCtx = useMemo(() => {
     if (!isBrowser) return null;
 
@@ -261,7 +254,7 @@ export function ChatKitPanel({
       colorScheme: theme,
       color: {
         grayscale: { hue: 220, tint: 6, shade: theme === "dark" ? -1 : -4 },
-        accent: { primary: theme === "dark" ? "#f1f5f9" : "#0f172a", level: 1 },
+        accent: { primary: theme === "dark" ? "#0f172a" : "#0f172a", level: 1 },
       },
       radius: "round",
     },
@@ -269,51 +262,58 @@ export function ChatKitPanel({
     composer: { placeholder: PLACEHOLDER_INPUT },
     threadItemActions: { feedback: false },
 
-    onThreadChange: ({ threadId }: { threadId: string | null }) => {
-      if (isDev) console.info("[ChatKitPanel] onThreadChange", { threadId });
-      latestThreadIdRef.current = threadId;
-
-      // First time we see a non-null threadId → inject context once.
-      if (threadId && !injectedRef.current && episodeCtx?.code) {
-        injectedRef.current = true;
-        // Fire on next macrotask to give the widget a tick to settle.
-        setTimeout(() => {
-          if (isDev) console.info("[ChatKitPanel] injecting set_episode_context (onThreadChange)", episodeCtx);
-          chatkit
-            .sendCustomAction({
-              type: "set_episode_context",
-              payload: {
-                episodeCode: episodeCtx.code,
-                title: episodeCtx.title,
-                mp3: episodeCtx.mp3,
-              },
-            })
-            .catch((e: unknown) => {
-              injectedRef.current = false; // allow fallback onResponseStart
-              console.error("Failed to send set_episode_context in onThreadChange", e);
-            });
-        }, 0);
+    // Let the agent PULL the context
+    onClientTool: async (invocation: { name: string; params: Record<string, unknown> }) => {
+      if (invocation.name === "switch_theme") {
+        const requested = invocation.params.theme;
+        if (requested === "light" || requested === "dark") {
+          if (isDev) console.debug("[ChatKitPanel] switch_theme", requested);
+          onThemeRequest(requested as ColorScheme);
+          return { ok: true };
+        }
+        return { ok: false };
       }
+
+      if (invocation.name === "record_fact") {
+        const id = String(invocation.params.fact_id ?? "");
+        const text = String(invocation.params.fact_text ?? "");
+        if (!id || processedFacts.current.has(id)) return { ok: true };
+        processedFacts.current.add(id);
+        void onWidgetAction({
+          type: "save",
+          factId: id,
+          factText: text.replace(/\s+/g, " ").trim(),
+        });
+        return { ok: true };
+      }
+
+      if (invocation.name === "request_episode_context") {
+        let code = episodeCtx?.code;
+        let title = episodeCtx?.title;
+        let mp3 = episodeCtx?.mp3;
+
+        // Final fallback: query params
+        if (!code && typeof window !== "undefined") {
+          const p = new URLSearchParams(window.location.search);
+          code = p.get("episodeCode") ?? undefined;
+          title = title ?? (p.get("title") ?? undefined);
+          mp3 = mp3 ?? (p.get("mp3") ?? undefined);
+        }
+
+        if (isDev) console.info("[ChatKitPanel] request_episode_context →", { code, title, mp3 });
+
+        return {
+          ok: true,
+          episodeCode: code ?? null,
+          title: title ?? null,
+          mp3: mp3 ?? null,
+        };
+      }
+
+      return { ok: false };
     },
 
-    onResponseStart: async () => {
-      // Fallback: if somehow we didn't inject yet, do it now.
-      if (!injectedRef.current && episodeCtx?.code) {
-        injectedRef.current = true;
-        try {
-          if (isDev) console.info("[ChatKitPanel] injecting set_episode_context (onResponseStart)", episodeCtx);
-          await chatkit.sendCustomAction({
-            type: "set_episode_context",
-            payload: {
-              episodeCode: episodeCtx.code,
-              title: episodeCtx.title,
-              mp3: episodeCtx.mp3,
-            },
-          });
-        } catch (e) {
-          console.error("Failed to inject context in onResponseStart", e);
-        }
-      }
+    onResponseStart: () => {
       setErrorState({ integration: null, retryable: false });
     },
 
@@ -321,64 +321,10 @@ export function ChatKitPanel({
       onResponseEnd();
     },
 
-    onClientTool: async (invocation: { name: string; params: Record<string, unknown> }) => {
-  // Theme switch (keep your existing behaviour)
-  if (invocation.name === "switch_theme") {
-    const requested = invocation.params.theme;
-    if (requested === "light" || requested === "dark") {
-      if (isDev) console.debug("[ChatKitPanel] switch_theme", requested);
-      onThemeRequest(requested as ColorScheme);
-      return { ok: true };
-    }
-    return { ok: false };
-  }
-
-  // Your existing "record_fact" handler (keep as-is)
-  if (invocation.name === "record_fact") {
-    const id = String(invocation.params.fact_id ?? "");
-    const text = String(invocation.params.fact_text ?? "");
-    if (!id || processedFacts.current.has(id)) return { ok: true };
-    processedFacts.current.add(id);
-    void onWidgetAction({
-      type: "save",
-      factId: id,
-      factText: text.replace(/\s+/g, " ").trim(),
-    });
-    return { ok: true };
-  }
-
-  // NEW: let the agent pull the episode context
-  if (invocation.name === "request_episode_context") {
-    // Prefer state you’ve captured (via postMessage or query params)
-    // episodeCtx: { code, title?, mp3? } from your component state
-    let code = episodeCtx?.code;
-    let title = episodeCtx?.title;
-    let mp3 = episodeCtx?.mp3;
-
-    // Fallback to URL params if state isn’t set yet
-    if (!code && typeof window !== "undefined") {
-      const p = new URLSearchParams(window.location.search);
-      code = p.get("episodeCode") ?? undefined;
-      title = title ?? (p.get("title") ?? undefined);
-      mp3 = mp3 ?? (p.get("mp3") ?? undefined);
-    }
-
-    if (isDev) {
-      console.info("[ChatKitPanel] request_episode_context →", { code, title, mp3 });
-    }
-
-    // Return exactly what the agent expects
-    return {
-      ok: true,
-      episodeCode: code ?? null,
-      title: title ?? null,
-      mp3: mp3 ?? null,
-    };
-  }
-
-  // Unknown tool
-  return { ok: false };
-},
+    onError: ({ error }: { error: unknown }) => {
+      console.error("ChatKit error", error);
+    },
+  });
 
   const activeError = errors.session ?? errors.integration;
   const blockingError = errors.script ?? activeError;
@@ -391,8 +337,6 @@ export function ChatKitPanel({
       hasError: Boolean(blockingError),
       workflowId: WORKFLOW_ID,
       episodeCtx,
-      injected: injectedRef.current,
-      latestThreadId: latestThreadIdRef.current,
     });
   }
 
