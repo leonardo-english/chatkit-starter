@@ -61,6 +61,17 @@ export function ChatKitPanel({
   );
   const [widgetInstanceKey, setWidgetInstanceKey] = useState(0);
 
+  // Episode context coming from Webflow (or query params)
+const [episodeCtx, setEpisodeCtx] = useState<{
+  code: string;
+  title?: string;
+  mp3?: string;
+} | null>(null);
+
+// Ensure we only send the context once per session
+const ctxSentRef = useRef(false);
+
+
   const setErrorState = useCallback((updates: Partial<ErrorState>) => {
     setErrors((current) => ({ ...current, ...updates }));
   }, []);
@@ -133,6 +144,47 @@ export function ChatKitPanel({
   const isWorkflowConfigured = Boolean(
     WORKFLOW_ID && !WORKFLOW_ID.startsWith("wf_replace")
   );
+
+  // Fallback: also accept query params if you ever decide to pass them (optional)
+useEffect(() => {
+  const params = new URLSearchParams(window.location.search);
+  const code = params.get("episodeCode");
+  if (code) {
+    setEpisodeCtx({
+      code,
+      title: params.get("title") || undefined,
+      mp3: params.get("mp3") || undefined,
+    });
+  }
+}, []);
+
+// Receive context via postMessage from the Webflow parent page
+useEffect(() => {
+  // Allow only your embedding origins
+  const ALLOWED_PARENTS = [
+    "https://leonardo-english.webflow.io",
+    // add your live site when ready:
+    // "https://leonardoenglish.com",
+  ];
+
+  function onMessage(e: MessageEvent) {
+    if (!e.data || e.data.type !== "le-episode-context") return;
+    if (!ALLOWED_PARENTS.includes(e.origin)) return; // origin check
+
+    const code = String(e.data.code || "").trim();
+    if (!code) return;
+
+    setEpisodeCtx({
+      code,
+      title: (e.data.title || "").trim() || undefined,
+      mp3: (e.data.mp3 || "").trim() || undefined,
+    });
+  }
+
+  window.addEventListener("message", onMessage);
+  return () => window.removeEventListener("message", onMessage);
+}, []);
+
 
   useEffect(() => {
     if (!isWorkflowConfigured && isMountedRef.current) {
@@ -337,6 +389,28 @@ export function ChatKitPanel({
       console.error("ChatKit error", error);
     },
   });
+
+  // When chatkit is ready and we have an episode code, post a tiny context message once
+useEffect(() => {
+  if (!chatkit.control) return;
+  if (!episodeCtx?.code) return;
+  if (ctxSentRef.current) return;
+
+  ctxSentRef.current = true;
+
+  const block =
+    `[[EPISODE_CONTEXT]]\n` +
+    `code:${episodeCtx.code}\n` +
+    (episodeCtx.title ? `title:${episodeCtx.title}\n` : "") +
+    (episodeCtx.mp3 ? `mp3:${episodeCtx.mp3}\n` : "") +
+    `[[/EPISODE_CONTEXT]]`;
+
+  chatkit.control.send({
+    role: "user",
+    content: [{ type: "input_text", text: block }],
+  });
+}, [chatkit.control, episodeCtx]);
+
 
   const activeError = errors.session ?? errors.integration;
   const blockingError = errors.script ?? activeError;
