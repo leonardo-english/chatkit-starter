@@ -67,7 +67,7 @@ export function ChatKitPanel({
     };
   }, []);
 
-  // Load web component script sentinel
+  // Detect the ChatKit web component script availability (purely to surface a friendly error)
   useEffect(() => {
     if (!isBrowser) return;
 
@@ -98,7 +98,7 @@ export function ChatKitPanel({
         if (!window.customElements?.get("openai-chatkit")) {
           handleError(
             new CustomEvent("chatkit-script-error", {
-              detail: "ChatKit web component unavailable. Check the CDN.",
+              detail: "ChatKit web component unavailable. Check CDN reachability.",
             }),
           );
         }
@@ -134,40 +134,38 @@ export function ChatKitPanel({
     setWidgetInstanceKey((prev) => prev + 1);
   }, []);
 
-  // -------- Resolve episode context (prefer parent referrer, else iframe URL) --------
+  /**
+   * Where we read the episode context from:
+   * 1) The embedding (Webflow) page URL (document.referrer)
+   * 2) Fallback to this iframe's own URL (window.location.search)
+   */
   const episodeCtx = useMemo(() => {
     if (!isBrowser) return null;
 
-    let from: "parent" | "self" | "none" = "none";
     let code: string | null = null;
-    let title: string | undefined;
-    let mp3: string | undefined;
+    let title: string | null = null;
+    let mp3: string | null = null;
+    let from: "parent" | "self" | "none" = "none";
 
     try {
       const parentUrl = document.referrer ? new URL(document.referrer) : null;
       if (parentUrl) {
         const p = parentUrl.searchParams;
-        const c = p.get("episodeCode");
-        if (c) {
-          code = c;
-          title = p.get("title") || undefined;
-          mp3 = p.get("mp3") || undefined;
-          from = "parent";
-        }
+        code = p.get("episodeCode");
+        title = p.get("title");
+        mp3 = p.get("mp3");
+        if (code) from = "parent";
       }
     } catch {
-      // ignore cross-origin parsing errors
+      /* cross-origin parsing can fail; ignore */
     }
 
     if (!code) {
-      const params = new URLSearchParams(window.location.search);
-      const c = params.get("episodeCode");
-      if (c) {
-        code = c;
-        title = params.get("title") || undefined;
-        mp3 = params.get("mp3") || undefined;
-        from = "self";
-      }
+      const p = new URLSearchParams(window.location.search);
+      code = p.get("episodeCode");
+      title = title ?? p.get("title");
+      mp3 = mp3 ?? p.get("mp3");
+      if (code) from = "self";
     }
 
     if (isDev) {
@@ -175,10 +173,13 @@ export function ChatKitPanel({
     }
 
     if (!code) return null;
-    return { code, title, mp3 };
+    return { episodeCode: code, title, mp3 };
   }, []);
 
-  // -------- Create ChatKit session (no metadata in POST) --------
+  /**
+   * Create a ChatKit session (no metadata in the POST body).
+   * The agent will call our client tool to fetch episode context when needed.
+   */
   const getClientSecret = useCallback(
     async (currentSecret: string | null) => {
       if (isDev) {
@@ -247,69 +248,73 @@ export function ChatKitPanel({
     [isWorkflowConfigured, setErrorState],
   );
 
-  // -------- Wire up ChatKit --------
+  /**
+   * Wire up the widget.
+   * We DO NOT push hidden messages or actions.
+   * Instead we implement a client tool the agent can call to fetch context.
+   */
   const chatkit = useChatKit({
     api: { getClientSecret },
     theme: {
       colorScheme: theme,
       color: {
         grayscale: { hue: 220, tint: 6, shade: theme === "dark" ? -1 : -4 },
-        accent: { primary: theme === "dark" ? "#0f172a" : "#0f172a", level: 1 },
+        accent: { primary: theme === "dark" ? "#f1f5f9" : "#0f172a", level: 1 },
       },
-      radius: "round",
+    ,  radius: "round",
     },
     startScreen: { greeting: GREETING, prompts: STARTER_PROMPTS },
     composer: { placeholder: PLACEHOLDER_INPUT },
     threadItemActions: { feedback: false },
 
-    // Let the agent PULL the context
-    onClientTool: async (invocation: { name: string; params: Record<string, unknown> }) => {
-      if (invocation.name === "switch_theme") {
-        const requested = invocation.params.theme;
+    onClientTool: async ({ name, params }: { name: string; params: Record<string, unknown> }) => {
+      if (isDev) console.info("[ChatKitPanel] Client tool invoked:", name, params);
+
+      // Let the agent toggle theme (keeps existing behaviour)
+      if (name === "switch_theme") {
+        const requested = params.theme;
         if (requested === "light" || requested === "dark") {
-          if (isDev) console.debug("[ChatKitPanel] switch_theme", requested);
           onThemeRequest(requested as ColorScheme);
           return { ok: true };
         }
         return { ok: false };
       }
 
-      if (invocation.name === "record_fact") {
-        const id = String(invocation.params.fact_id ?? "");
-        const text = String(invocation.params.fact_text ?? "");
+      // Let the agent “save fact” (keeps existing behaviour)
+      if (name === "record_fact") {
+        const id = String(params.fact_id ?? "");
+        const text = String(params.fact_text ?? "");
         if (!id || processedFacts.current.has(id)) return { ok: true };
         processedFacts.current.add(id);
-        void onWidgetAction({
-          type: "save",
-          factId: id,
-          factText: text.replace(/\s+/g, " ").trim(),
-        });
+        await onWidgetAction({ type: "save", factId: id, factText: text.replace(/\s+/g, " ").trim() });
         return { ok: true };
       }
 
-      if (invocation.name === "request_episode_context") {
-        let code = episodeCtx?.code;
-        let title = episodeCtx?.title;
-        let mp3 = episodeCtx?.mp3;
+      // *** The important one: the agent asks us for the current episode context
+      if (name === "request_episode_context") {
+        // Prefer what we already computed
+        let code = episodeCtx?.episodeCode ?? null;
+        let title = episodeCtx?.title ?? null;
+        let mp3 = episodeCtx?.mp3 ?? null;
 
-        // Final fallback: query params
-        if (!code && typeof window !== "undefined") {
+        // Fallback to iframe URL if needed
+        if (!code) {
           const p = new URLSearchParams(window.location.search);
-          code = p.get("episodeCode") ?? undefined;
-          title = title ?? (p.get("title") ?? undefined);
-          mp3 = mp3 ?? (p.get("mp3") ?? undefined);
+          code = p.get("episodeCode");
+          title = title ?? p.get("title");
+          mp3 = mp3 ?? p.get("mp3");
         }
 
-        if (isDev) console.info("[ChatKitPanel] request_episode_context →", { code, title, mp3 });
+        if (isDev) console.info("[ChatKitPanel] returning episode context →", { code, title, mp3 });
 
         return {
-          ok: true,
-          episodeCode: code ?? null,
-          title: title ?? null,
-          mp3: mp3 ?? null,
+          episodeCode: code,
+          title,
+          mp3,
         };
       }
 
+      // Unknown tool → let the agent know it’s unsupported
       return { ok: false };
     },
 
@@ -319,6 +324,11 @@ export function ChatKitPanel({
 
     onResponseEnd: () => {
       onResponseEnd();
+    },
+
+    onThreadChange: () => {
+      // New thread → clear dedupe set for facts
+      processedFacts.current.clear();
     },
 
     onError: ({ error }: { error: unknown }) => {
