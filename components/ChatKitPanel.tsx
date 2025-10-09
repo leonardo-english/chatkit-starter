@@ -268,12 +268,12 @@ export function ChatKitPanel({
     threadItemActions: { feedback: false },
 
 onClientTool: async ({ name, params }: { name: string; params: Record<string, unknown> }) => {
-  // Dev logging (safe to keep)
+  // Dev logging
   if (process.env.NODE_ENV !== "production") {
     console.info("[ChatKitPanel] Client tool invoked:", name, params);
   }
 
-  // A) Theme toggle (keeps your current behaviour)
+  // 1) Theme toggle (existing behavior)
   if (name === "switch_theme") {
     const requested = params.theme;
     if (requested === "light" || requested === "dark") {
@@ -283,14 +283,13 @@ onClientTool: async ({ name, params }: { name: string; params: Record<string, un
     return { ok: false };
   }
 
-  // B) Episode context for the agent (NEW)
+  // 2) Let the agent ask for episode context (this is what your agent calls)
   if (name === "request_episode_context") {
-    // Easiest source of truth: read from the iframe URL
-    const params = new URLSearchParams(window.location.search);
-    const episodeCode = (params.get("episodeCode") || "").trim();
-    const title = (params.get("title") || "").trim();
+    const qs = new URLSearchParams(window.location.search);
+    const episodeCode = (qs.get("episodeCode") || "").trim();
+    const title = (qs.get("title") || "").trim();
 
-    // Return exactly what the agent expects (no mp3)
+    // Return exactly what the agent expects (we're dropping mp3 now)
     return {
       ok: true,
       episodeCode: episodeCode || null,
@@ -298,12 +297,19 @@ onClientTool: async ({ name, params }: { name: string; params: Record<string, un
     };
   }
 
-  // C) Optional: keep your other client tools (example: record_fact)
+  // 3) (Optional) record_fact – only if you actually use it
   if (name === "record_fact") {
     const id = String(params.fact_id ?? "");
     const text = String(params.fact_text ?? "");
-    if (!id) return { ok: true };
-    // ... your existing save logic here if you use it ...
+    if (!id || processedFacts.current.has(id)) {
+      return { ok: true };
+    }
+    processedFacts.current.add(id);
+    await onWidgetAction({
+      type: "save",
+      factId: id,
+      factText: text.replace(/\s+/g, " ").trim(),
+    });
     return { ok: true };
   }
 
