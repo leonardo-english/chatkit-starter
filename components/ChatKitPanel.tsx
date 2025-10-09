@@ -267,18 +267,49 @@ export function ChatKitPanel({
     composer: { placeholder: PLACEHOLDER_INPUT },
     threadItemActions: { feedback: false },
 
-    onClientTool: async ({ name, params }: { name: string; params: Record<string, unknown> }) => {
-      if (isDev) console.info("[ChatKitPanel] Client tool invoked:", name, params);
+onClientTool: async ({ name, params }: { name: string; params: Record<string, unknown> }) => {
+  // Dev logging (safe to keep)
+  if (process.env.NODE_ENV !== "production") {
+    console.info("[ChatKitPanel] Client tool invoked:", name, params);
+  }
 
-      // Let the agent toggle theme (keeps existing behaviour)
-      if (name === "switch_theme") {
-        const requested = params.theme;
-        if (requested === "light" || requested === "dark") {
-          onThemeRequest(requested as ColorScheme);
-          return { ok: true };
-        }
-        return { ok: false };
-      }
+  // A) Theme toggle (keeps your current behaviour)
+  if (name === "switch_theme") {
+    const requested = params.theme;
+    if (requested === "light" || requested === "dark") {
+      onThemeRequest(requested as ColorScheme);
+      return { ok: true };
+    }
+    return { ok: false };
+  }
+
+  // B) Episode context for the agent (NEW)
+  if (name === "request_episode_context") {
+    // Easiest source of truth: read from the iframe URL
+    const params = new URLSearchParams(window.location.search);
+    const episodeCode = (params.get("episodeCode") || "").trim();
+    const title = (params.get("title") || "").trim();
+
+    // Return exactly what the agent expects (no mp3)
+    return {
+      ok: true,
+      episodeCode: episodeCode || null,
+      title: title || null,
+    };
+  }
+
+  // C) Optional: keep your other client tools (example: record_fact)
+  if (name === "record_fact") {
+    const id = String(params.fact_id ?? "");
+    const text = String(params.fact_text ?? "");
+    if (!id) return { ok: true };
+    // ... your existing save logic here if you use it ...
+    return { ok: true };
+  }
+
+  // Unknown tool
+  return { ok: false };
+},
 
       // Let the agent “save fact” (keeps existing behaviour)
       if (name === "record_fact") {
