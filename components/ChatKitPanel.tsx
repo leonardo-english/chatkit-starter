@@ -261,7 +261,7 @@ export function ChatKitPanel({
         grayscale: { hue: 220, tint: 6, shade: theme === "dark" ? -1 : -4 },
         accent: { primary: theme === "dark" ? "#f1f5f9" : "#0f172a", level: 1 },
       },
-    ,  radius: "round",
+      radius: "round",
     },
     startScreen: { greeting: GREETING, prompts: STARTER_PROMPTS },
     composer: { placeholder: PLACEHOLDER_INPUT },
