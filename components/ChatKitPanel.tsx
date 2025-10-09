@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { ChatKit, useChatKit } from "@openai/chatkit-react";
 import {
   STARTER_PROMPTS,
@@ -67,7 +67,7 @@ export function ChatKitPanel({
     };
   }, []);
 
-  // Detect the ChatKit web component script availability (purely to surface a friendly error)
+  // Load ChatKit web component sentinel
   useEffect(() => {
     if (!isBrowser) return;
 
@@ -98,7 +98,7 @@ export function ChatKitPanel({
         if (!window.customElements?.get("openai-chatkit")) {
           handleError(
             new CustomEvent("chatkit-script-error", {
-              detail: "ChatKit web component unavailable. Check CDN reachability.",
+              detail: "ChatKit web component unavailable. Check the CDN.",
             }),
           );
         }
@@ -134,52 +134,7 @@ export function ChatKitPanel({
     setWidgetInstanceKey((prev) => prev + 1);
   }, []);
 
-  /**
-   * Where we read the episode context from:
-   * 1) The embedding (Webflow) page URL (document.referrer)
-   * 2) Fallback to this iframe's own URL (window.location.search)
-   */
-  const episodeCtx = useMemo(() => {
-    if (!isBrowser) return null;
-
-    let code: string | null = null;
-    let title: string | null = null;
-    let mp3: string | null = null;
-    let from: "parent" | "self" | "none" = "none";
-
-    try {
-      const parentUrl = document.referrer ? new URL(document.referrer) : null;
-      if (parentUrl) {
-        const p = parentUrl.searchParams;
-        code = p.get("episodeCode");
-        title = p.get("title");
-        mp3 = p.get("mp3");
-        if (code) from = "parent";
-      }
-    } catch {
-      /* cross-origin parsing can fail; ignore */
-    }
-
-    if (!code) {
-      const p = new URLSearchParams(window.location.search);
-      code = p.get("episodeCode");
-      title = title ?? p.get("title");
-      mp3 = mp3 ?? p.get("mp3");
-      if (code) from = "self";
-    }
-
-    if (isDev) {
-      console.info("[ChatKitPanel] episodeCtx", { from, code, title, mp3 });
-    }
-
-    if (!code) return null;
-    return { episodeCode: code, title, mp3 };
-  }, []);
-
-  /**
-   * Create a ChatKit session (no metadata in the POST body).
-   * The agent will call our client tool to fetch episode context when needed.
-   */
+  // --- Create ChatKit session (NO metadata in the POST) ---
   const getClientSecret = useCallback(
     async (currentSecret: string | null) => {
       if (isDev) {
@@ -248,11 +203,7 @@ export function ChatKitPanel({
     [isWorkflowConfigured, setErrorState],
   );
 
-  /**
-   * Wire up the widget.
-   * We DO NOT push hidden messages or actions.
-   * Instead we implement a client tool the agent can call to fetch context.
-   */
+  // --- Wire up ChatKit ---
   const chatkit = useChatKit({
     api: { getClientSecret },
     theme: {
@@ -267,91 +218,63 @@ export function ChatKitPanel({
     composer: { placeholder: PLACEHOLDER_INPUT },
     threadItemActions: { feedback: false },
 
-onClientTool: async ({ name, params }: { name: string; params: Record<string, unknown> }) => {
-  // Dev logging
-  if (process.env.NODE_ENV !== "production") {
-    console.info("[ChatKitPanel] Client tool invoked:", name, params);
-  }
+    // The agent will call this to get episode context.
+    onClientTool: async ({
+      name,
+      params,
+    }: {
+      name: string;
+      params: Record<string, unknown>;
+    }) => {
+      if (isDev) console.info("[ChatKitPanel] Client tool invoked:", name, params);
 
-  // 1) Theme toggle (existing behavior)
-  if (name === "switch_theme") {
-    const requested = params.theme;
-    if (requested === "light" || requested === "dark") {
-      onThemeRequest(requested as ColorScheme);
-      return { ok: true };
-    }
-    return { ok: false };
-  }
-
-  // 2) Let the agent ask for episode context (this is what your agent calls)
-  if (name === "request_episode_context") {
-    const qs = new URLSearchParams(window.location.search);
-    const episodeCode = (qs.get("episodeCode") || "").trim();
-    const title = (qs.get("title") || "").trim();
-
-    // Return exactly what the agent expects (we're dropping mp3 now)
-    return {
-      ok: true,
-      episodeCode: episodeCode || null,
-      title: title || null,
-    };
-  }
-
-  // 3) (Optional) record_fact – only if you actually use it
-  if (name === "record_fact") {
-    const id = String(params.fact_id ?? "");
-    const text = String(params.fact_text ?? "");
-    if (!id || processedFacts.current.has(id)) {
-      return { ok: true };
-    }
-    processedFacts.current.add(id);
-    await onWidgetAction({
-      type: "save",
-      factId: id,
-      factText: text.replace(/\s+/g, " ").trim(),
-    });
-    return { ok: true };
-  }
-
-  // Unknown tool
-  return { ok: false };
-},
-
-      // Let the agent “save fact” (keeps existing behaviour)
-      if (name === "record_fact") {
-        const id = String(params.fact_id ?? "");
-        const text = String(params.fact_text ?? "");
-        if (!id || processedFacts.current.has(id)) return { ok: true };
-        processedFacts.current.add(id);
-        await onWidgetAction({ type: "save", factId: id, factText: text.replace(/\s+/g, " ").trim() });
-        return { ok: true };
+      // 1) Theme toggle (existing behavior)
+      if (name === "switch_theme") {
+        const requested = params.theme;
+        if (requested === "light" || requested === "dark") {
+          onThemeRequest(requested as ColorScheme);
+          return { ok: true };
+        }
+        return { ok: false };
       }
 
-      // *** The important one: the agent asks us for the current episode context
+      // 2) Episode context for the agent (simple & robust): read from iframe URL
       if (name === "request_episode_context") {
-        // Prefer what we already computed
-        let code = episodeCtx?.episodeCode ?? null;
-        let title = episodeCtx?.title ?? null;
-        let mp3 = episodeCtx?.mp3 ?? null;
+        const qs = new URLSearchParams(window.location.search);
+        const episodeCode = (qs.get("episodeCode") || "").trim();
+        const title = (qs.get("title") || "").trim();
 
-        // Fallback to iframe URL if needed
-        if (!code) {
-          const p = new URLSearchParams(window.location.search);
-          code = p.get("episodeCode");
-          title = title ?? p.get("title");
-          mp3 = mp3 ?? p.get("mp3");
+        if (isDev) {
+          console.info("[ChatKitPanel] request_episode_context →", {
+            episodeCode,
+            title,
+          });
         }
 
-        if (isDev) console.info("[ChatKitPanel] returning episode context →", { code, title, mp3 });
-
         return {
-          episodeCode: code,
-          title,
-          mp3,
+          ok: true,
+          episodeCode: episodeCode || null,
+          title: title || null,
         };
       }
 
-      // Unknown tool → let the agent know it’s unsupported
+      // 3) Optional: allow the agent to save a fact (keep if you use it)
+      if (name === "record_fact") {
+        const id = String(params.fact_id ?? "");
+        const text = String(params.fact_text ?? "");
+        if (!id || processedFacts.current.has(id)) {
+          return { ok: true };
+        }
+        processedFacts.current.add(id);
+        await onWidgetAction({
+          type: "save",
+          factId: id,
+          factText: text.replace(/\s+/g, " ").trim(),
+        });
+        return { ok: true };
+      }
+
+      // Unknown tool
       return { ok: false };
     },
 
@@ -364,7 +287,6 @@ onClientTool: async ({ name, params }: { name: string; params: Record<string, un
     },
 
     onThreadChange: () => {
-      // New thread → clear dedupe set for facts
       processedFacts.current.clear();
     },
 
@@ -383,7 +305,6 @@ onClientTool: async ({ name, params }: { name: string; params: Record<string, un
       scriptStatus,
       hasError: Boolean(blockingError),
       workflowId: WORKFLOW_ID,
-      episodeCtx,
     });
   }
 
